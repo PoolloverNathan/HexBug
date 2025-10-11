@@ -48,13 +48,18 @@ from .hex_math import HexDir, HexPattern, PatternSignature
 from .lookups import PatternLookups
 from .mods import DynamicModInfo, ModInfo
 from .patterns import PatternInfo, PatternOperator
+from .sources import (
+    CodebergSourceInfo,
+    CodebergUserInfo,
+    GitHubSourceInfo,
+    GitHubUserInfo,
+)
 from .special_handlers import (
     SpecialHandlerInfo,
     SpecialHandlerMatch,
     SpecialHandlerPattern,
 )
 from .static_data import (
-    DISABLED_FLAGS,
     DISABLED_PAGES,
     DISABLED_PATTERNS,
     DISAMBIGUATED_PATTERNS,
@@ -226,7 +231,33 @@ class HexBugRegistry(BaseModel):
             if hexdoc_metadata.book_url is None:
                 raise ValueError(f"Mod missing book url: {mod_id}")
 
-            _, author, repo, commit = hexdoc_metadata.asset_url.parts
+            asset_url = hexdoc_metadata.asset_url
+            match asset_url.host:
+                case "raw.githubusercontent.com":
+                    _, author, repo, commit = asset_url.parts
+                    source = GitHubSourceInfo(
+                        author=GitHubUserInfo(author),
+                        repo=repo,
+                        commit=commit,
+                    )
+                case "codeberg.org":
+                    _, author, repo, _, _, commit = asset_url.parts
+                    source = CodebergSourceInfo(
+                        author=CodebergUserInfo(author),
+                        repo=repo,
+                        commit=commit,
+                    )
+                case "example.com" if mod_id == "hexic":  # :/
+                    _, author, repo, commit = asset_url.parts
+                    source = CodebergSourceInfo(
+                        author=CodebergUserInfo(author),
+                        repo=repo,
+                        commit=commit,
+                    )
+                case _:
+                    raise ValueError(
+                        f"Unhandled asset url host for {mod_id}: {asset_url}"
+                    )
 
             registry._register_mod(
                 ModInfo.from_parts(
@@ -238,9 +269,7 @@ class HexBugRegistry(BaseModel):
                         book_description=i18n.localize(
                             f"hexdoc.{mod_id}.description"
                         ).value,
-                        github_author=author,
-                        github_repo=repo,
-                        github_commit=commit,
+                        source=source,
                     ),
                 )
             )
@@ -254,12 +283,6 @@ class HexBugRegistry(BaseModel):
         lapisworks_per_world_shapes = dict[ResourceLocation, HexdocPatternInfo]()
 
         for category in book.categories.values():
-            if category.flag in DISABLED_FLAGS:
-                logger.info(
-                    f"Skipping category {category.id} because of disabled flag {category.flag}"
-                )
-                continue
-
             assert category.resource_dir.modid is not None
             category_mod = registry.mods[category.resource_dir.modid]
 
@@ -275,12 +298,6 @@ class HexBugRegistry(BaseModel):
             )
 
             for entry in category.entries.values():
-                if entry.flag in DISABLED_FLAGS:
-                    logger.info(
-                        f"Skipping entry {entry.id} because of disabled flag {entry.flag}"
-                    )
-                    continue
-
                 assert entry.resource_dir.modid is not None
                 entry_mod = registry.mods[entry.resource_dir.modid]
 
@@ -296,15 +313,10 @@ class HexBugRegistry(BaseModel):
                     )
                 )
 
-                for i, (page, next_page) in enumerate(
-                    zip_longest(entry.pages, entry.pages[1:], fillvalue=None)
+                for page, next_page in zip_longest(
+                    entry.pages, entry.pages[1:], fillvalue=None
                 ):
                     assert page
-                    if page.flag in DISABLED_FLAGS:
-                        logger.info(
-                            f"Skipping page {entry.id}[{i}] because of disabled flag {page.flag}"
-                        )
-                        continue
 
                     if (fragment := page.fragment(entry.fragment)) in DISABLED_PAGES:
                         logger.info(f"Skipping disabled page: {fragment}")
